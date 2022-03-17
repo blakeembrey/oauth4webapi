@@ -43,29 +43,31 @@ switch (plan.name) {
     throw new Error()
 }
 
-const algorithms: Map<string, RsaHashedImportParams | EcKeyImportParams> = new Map([
-  [
-    'PS256',
-    {
-      name: 'RSA-PSS',
-      hash: { name: 'SHA-256' },
-    },
-  ],
-  [
-    'ES256',
-    {
-      name: 'ECDSA',
-      namedCurve: 'P-256',
-    },
-  ],
-  [
-    'RS256',
-    {
-      name: 'RSASSA-PKCS1-v1_5',
-      hash: { name: 'SHA-256' },
-    },
-  ],
-])
+const algorithms: Map<string, RsaHashedImportParams | EcKeyImportParams | AlgorithmIdentifier> =
+  new Map([
+    [
+      'PS256',
+      {
+        name: 'RSA-PSS',
+        hash: { name: 'SHA-256' },
+      },
+    ],
+    [
+      'ES256',
+      {
+        name: 'ECDSA',
+        namedCurve: 'P-256',
+      },
+    ],
+    [
+      'RS256',
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: { name: 'SHA-256' },
+      },
+    ],
+    ['EdDSA', { name: 'Ed25519' }],
+  ])
 
 function importPrivateKey(alg: string, jwk: JsonWebKey) {
   return crypto.subtle.importKey('jwk', jwk, algorithms.get(alg)!, false, ['sign'])

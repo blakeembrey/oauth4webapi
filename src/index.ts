@@ -105,8 +105,15 @@ export type ClientAuthenticationMethod =
  *   hash: { name: 'SHA-256' }
  * }
  * ```
+ *
+ * @example EdDSA CryptoKey algorithm
+ * ```ts
+ * interface EdDSAAlgorithm extends KeyAlgorithm {
+ *   name: 'Ed25519'
+ * }
+ * ```
  */
-export type JWSAlgorithm = 'PS256' | 'ES256' | 'RS256'
+export type JWSAlgorithm = 'PS256' | 'ES256' | 'RS256' | 'EdDSA'
 
 /**
  * JSON Web Key
@@ -723,7 +730,7 @@ function isPublicKey(key: unknown): key is CryptoKey {
 
 export type ProcessingMode = 'oidc' | 'oauth2'
 
-const SUPPORTED_JWS_ALGS: JWSAlgorithm[] = ['PS256', 'ES256', 'RS256']
+const SUPPORTED_JWS_ALGS: JWSAlgorithm[] = ['PS256', 'ES256', 'RS256', 'EdDSA']
 
 export interface HttpRequestOptions {
   /**
@@ -1101,6 +1108,8 @@ function determineJWSAlgorithm(key: CryptoKey) {
       return rsAlg(key)
     case 'ECDSA':
       return esAlg(key)
+    case 'Ed25519':
+      return 'EdDSA'
     default:
       throw new UnsupportedOperationError('unsupported CryptoKey algorithm name')
   }
@@ -1795,13 +1804,16 @@ async function getPublicSigKeyFromIssuerJwksUri(
   }
 
   let kty: string
-  switch (alg[0]) {
-    case 'R': // Fall through
-    case 'P':
+  switch (alg.slice(0, 2)) {
+    case 'RS': // Fall through
+    case 'PS':
       kty = 'RSA'
       break
-    case 'E':
+    case 'ES':
       kty = 'EC'
+      break
+    case 'Ed':
+      kty = 'OKP'
       break
     default:
       throw new UnsupportedOperationError()
@@ -1834,12 +1846,13 @@ async function getPublicSigKeyFromIssuerJwksUri(
     }
 
     // filter keys based on alg-specific key requirements
-    switch (alg) {
-      case 'ES256':
-        return jwk.crv === 'P-256'
-      default:
-        return true
+    switch (true) {
+      case alg === 'ES256' && jwk.crv !== 'P-256': // Fall through
+      case alg === 'EdDSA' && jwk.crv !== 'Ed25519':
+        return false
     }
+
+    return true
   })
 
   const { 0: jwk, length } = candidates
@@ -1997,6 +2010,9 @@ async function idTokenHash(alg: string, data: string) {
     case 'PS256': // Fall through
     case 'ES256':
       algorithm = 'SHA-256'
+      break
+    case 'EdDSA':
+      algorithm = 'SHA-512'
       break
     default:
       throw new UnsupportedOperationError()
@@ -3110,6 +3126,8 @@ function subtleAlgorithm(key: CryptoKey): AlgorithmIdentifier | RsaPssParams | E
     case 'RSASSA-PKCS1-v1_5':
       checkRsaKeyAlgorithm(<RsaKeyAlgorithm>key.algorithm)
       return { name: key.algorithm.name }
+    case 'Ed25519':
+      return { name: key.algorithm.name }
   }
   throw new UnsupportedOperationError()
 }
@@ -3440,7 +3458,7 @@ type ReturnTypes =
 async function importJwk(jwk: JWK) {
   const { alg, ext, key_ops, use, ...key } = jwk
 
-  let algorithm: RsaHashedImportParams | EcKeyImportParams
+  let algorithm: RsaHashedImportParams | EcKeyImportParams | AlgorithmIdentifier
 
   switch (alg) {
     case 'PS256':
@@ -3451,6 +3469,9 @@ async function importJwk(jwk: JWK) {
       break
     case 'ES256':
       algorithm = { name: 'ECDSA', namedCurve: 'P-256' }
+      break
+    case 'EdDSA':
+      algorithm = { name: 'Ed25519' }
       break
     default:
       throw new UnsupportedOperationError()
@@ -3678,11 +3699,8 @@ export interface GenerateKeyPairOptions {
  *
  * @param alg Supported JWS `alg` Algorithm identifier.
  */
-export async function generateKeyPair(
-  alg: JWSAlgorithm,
-  options?: GenerateKeyPairOptions,
-): Promise<CryptoKeyPair> {
-  let algorithm: RsaHashedKeyGenParams | EcKeyGenParams
+export async function generateKeyPair(alg: JWSAlgorithm, options?: GenerateKeyPairOptions) {
+  let algorithm: RsaHashedKeyGenParams | EcKeyGenParams | AlgorithmIdentifier
 
   if (!validateString(alg)) {
     throw new TypeError('"alg" must be a non-empty string')
@@ -3708,11 +3726,16 @@ export async function generateKeyPair(
     case 'ES256':
       algorithm = { name: 'ECDSA', namedCurve: 'P-256' }
       break
+    case 'EdDSA':
+      algorithm = { name: 'Ed25519' }
+      break
     default:
       throw new UnsupportedOperationError()
   }
 
-  return crypto.subtle.generateKey(algorithm, options?.extractable ?? false, ['sign', 'verify'])
+  return <Promise<CryptoKeyPair>>(
+    crypto.subtle.generateKey(algorithm, options?.extractable ?? false, ['sign', 'verify'])
+  )
 }
 
 /**
@@ -3738,6 +3761,9 @@ export async function calculateJwkThumbprint(key: CryptoKey) {
   switch (jwk.kty) {
     case 'EC':
       components = { crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y }
+      break
+    case 'OKP':
+      components = { crv: jwk.crv, kty: jwk.kty, x: jwk.x }
       break
     case 'RSA':
       components = { e: jwk.e, kty: jwk.kty, n: jwk.n }
