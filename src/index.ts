@@ -49,6 +49,11 @@ export interface PrivateKey {
  * The `client_assertion` is signed using a private key supplied
  * as an {@link AuthenticatedRequestOptions.clientPrivateKey options parameter}.
  *
+ * - **`client_secret_jwt`** uses the HTTP request body to send
+ * {@link Client.client_id `client_id`}, `client_assertion_type`, and `client_assertion`
+ * as `application/x-www-form-urlencoded` body parameters.
+ * The `client_assertion` is signed using the {@link Client.client_secret `client_secret`}.
+ *
  * - **`none`** (public client) uses the HTTP request body to send only
  * {@link Client.client_id `client_id`}
  * as `application/x-www-form-urlencoded` body parameter.
@@ -61,6 +66,7 @@ export interface PrivateKey {
 export type ClientAuthenticationMethod =
   | 'client_secret_basic'
   | 'client_secret_post'
+  | 'client_secret_jwt'
   | 'private_key_jwt'
   | 'none'
 
@@ -1089,6 +1095,22 @@ async function privateKeyJwt(
   )
 }
 
+/**
+ * Generates a unique client assertion to be used in HS256 `client_secret_jwt`
+ * authenticated requests.
+ */
+async function clientSecretJwt(as: AuthorizationServer, client: Client, secret: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    buf(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+
+  return jwt({ alg: 'HS256' }, clientAssertion(as, client), key)
+}
+
 function assertIssuer(metadata: AuthorizationServer): metadata is AuthorizationServer {
   if (typeof metadata !== 'object' || metadata === null) {
     throw new TypeError('"issuer" must be an object')
@@ -1165,6 +1187,16 @@ async function clientAuthentication(
       body.set('client_secret', assertClientSecret(client.client_secret))
       break
     }
+    case 'client_secret_jwt': {
+      assertNoClientPrivateKey('client_secret_jwt', clientPrivateKey)
+      body.set('client_id', client.client_id)
+      body.set('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer')
+      body.set(
+        'client_assertion',
+        await clientSecretJwt(as, client, assertClientSecret(client.client_secret)),
+      )
+      break
+    }
     case 'private_key_jwt': {
       assertNoClientSecret('private_key_jwt', client.client_secret)
       if (clientPrivateKey === undefined) {
@@ -1196,7 +1228,7 @@ async function clientAuthentication(
  * Minimal JWT sign() implementation.
  */
 async function jwt(
-  header: CompactJWSHeaderParameters,
+  header: CompactJWSHeaderParameters | ClientSecretJWTHeaderParameters,
   claimsSet: Record<string, unknown>,
   key: CryptoKey,
 ) {
@@ -2340,6 +2372,10 @@ export interface IDToken extends JWTPayload {
   readonly azp?: string
 }
 
+interface ClientSecretJWTHeaderParameters {
+  alg: 'HS256'
+}
+
 interface CompactJWSHeaderParameters {
   alg: JWSAlgorithm
   kid?: string
@@ -3038,6 +3074,8 @@ function subtleAlgorithm(key: CryptoKey): AlgorithmIdentifier | RsaPssParams | E
       }
     case 'RSASSA-PKCS1-v1_5':
       checkRsaKeyAlgorithm(<RsaKeyAlgorithm>key.algorithm)
+      return { name: key.algorithm.name }
+    case 'HMAC':
       return { name: key.algorithm.name }
   }
   throw new UnsupportedOperationError()
